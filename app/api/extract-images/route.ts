@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createOpenAIClient } from '@/lib/gemini/openai-client';
-import { validateGeminiConfig } from '@/config/gemini';
-import { ExtractImagesResponse, GeminiConfig } from '@/types';
+import { validateImageApiConfig } from '@/config/gemini';
+import { ExtractImagesResponse, ApiConfig } from '@/types';
 
 /**
  * POST /api/extract-images
@@ -10,7 +10,7 @@ import { ExtractImagesResponse, GeminiConfig } from '@/types';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { croppedImageBase64, geminiConfig } = body;
+    const { croppedImageBase64, apiConfig } = body;
 
     // 验证输入
     if (!croppedImageBase64) {
@@ -21,15 +21,15 @@ export async function POST(request: NextRequest) {
     }
 
     // 验证配置
-    if (!geminiConfig || !validateGeminiConfig(geminiConfig as GeminiConfig)) {
+    if (!apiConfig || !validateImageApiConfig(apiConfig as ApiConfig)) {
       return NextResponse.json(
-        { error: 'API 配置无效' } as ExtractImagesResponse,
+        { error: '图像 API 配置无效' } as ExtractImagesResponse,
         { status: 400 }
       );
     }
 
-    // 创建 OpenAI 兼容客户端
-    const client = createOpenAIClient(geminiConfig as GeminiConfig);
+    // 创建客户端
+    const client = createOpenAIClient(apiConfig as ApiConfig);
 
     // 提取单个插画
     const image = await client.extractSingleImage(croppedImageBase64);

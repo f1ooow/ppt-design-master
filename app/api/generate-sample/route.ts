@@ -1,44 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ApiConfig } from '@/types';
+import { validateTextApiConfig } from '@/config/gemini';
+import { SYSTEM_PROMPTS } from '@/config/prompts';
 
 export async function POST(request: NextRequest) {
   try {
-    const { geminiConfig } = await request.json();
+    const { apiConfig } = await request.json();
 
-    if (!geminiConfig?.apiUrl || !geminiConfig?.apiKey) {
+    // 验证文本 API 配置
+    if (!apiConfig || !validateTextApiConfig(apiConfig)) {
       return NextResponse.json(
-        { error: '请先配置 API' },
+        { error: '请先配置文本 API' },
         { status: 400 }
       );
     }
 
-    const prompt = `你是一个电商微课内容创作专家。请随机生成一小段电商相关的微课知识点文段（50-100字），主题可以是：
-- 用户推广与拉新
-- 店铺运营技巧
-- 商品详情页优化
-- 直播带货技巧
-- 私域流量运营
-- 数据分析与复盘
-- 客户服务与售后
-- 活动策划与促销
+    const textApi = (apiConfig as ApiConfig).text;
 
-要求：
-1. 内容专业、实用
-2. 语言简洁明了
-3. 包含具体的知识点或技巧
-4. 适合做成PPT展示
-
-直接输出知识点内容，不要加任何前缀或标题。`;
-
-    const response = await fetch(`${geminiConfig.apiUrl}/chat/completions`, {
+    const response = await fetch(`${textApi.apiUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${geminiConfig.apiKey}`,
+        'Authorization': `Bearer ${textApi.apiKey}`,
       },
       body: JSON.stringify({
-        model: 'gemini-2.0-flash',
+        model: textApi.model,
         messages: [
-          { role: 'user', content: prompt }
+          { role: 'user', content: SYSTEM_PROMPTS.generateSample }
         ],
         max_tokens: 200,
         temperature: 0.9,

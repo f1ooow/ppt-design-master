@@ -1,11 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { GeminiConfig, GenerationResult, PPTDesign } from '@/types';
+import { ApiConfig, GenerationResult, PPTDesign } from '@/types';
 import ConfigPanel from '@/components/ConfigPanel';
 import TemplateUpload from '@/components/TemplateUpload';
 import ResultDisplay from '@/components/ResultDisplay';
 import PromptSettings from '@/components/PromptSettings';
+import BatchMode from '@/components/BatchMode';
+import { loadPromptConfig } from '@/config/prompts';
 
 // 单个图片的生成状态
 type ImageSlot = {
@@ -13,13 +15,35 @@ type ImageSlot = {
   status: 'pending' | 'generating' | 'completed' | 'error';
   result?: GenerationResult;
   error?: string;
-  startTime?: number; // 开始生成的时间戳
+  startTime?: number;
+};
+
+// 模式类型
+type AppMode = 'single' | 'batch';
+
+// 生成步骤
+type GenerationStep = 'idle' | 'analyzing' | 'analyzed' | 'generating';
+
+// 默认配置（方便快速使用）
+const defaultApiConfig: ApiConfig = {
+  text: {
+    apiUrl: 'https://cottonapi.cloud/v1',
+    apiKey: 'sk-V5qeMJn0hTs1zr205WO6Zu0D29Y6VM1y4kGbZ9f31HFLj4i5',
+    model: 'gemini-2.0-flash',
+  },
+  image: {
+    apiUrl: 'https://privnode.com',
+    apiKey: 'sk-oSyrVIvzQNs0A6XNpGhes2BNe8xNZgiZq6ZCJfHiO0jvMlkA',
+    model: 'gemini-3-pro-image-preview-2k',
+    extractModel: 'gemini-2.5-flash-image-preview',
+  },
 };
 
 export default function Home() {
+  const [mode, setMode] = useState<AppMode>('single');
   const [showConfigPanel, setShowConfigPanel] = useState(false);
   const [showPromptSettings, setShowPromptSettings] = useState(false);
-  const [geminiConfig, setGeminiConfig] = useState<GeminiConfig | null>(null);
+  const [apiConfig, setApiConfig] = useState<ApiConfig | null>(null);
 
   // 表单状态
   const [script, setScript] = useState('');
@@ -30,11 +54,15 @@ export default function Home() {
   const [imageSlots, setImageSlots] = useState<ImageSlot[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
 
+  // 画面描述（新增）
+  const [description, setDescription] = useState('');
+  const [generationStep, setGenerationStep] = useState<GenerationStep>('idle');
+
   // 选中查看的结果
   const [selectedResult, setSelectedResult] = useState<GenerationResult | null>(null);
   const [isExtractingImages, setIsExtractingImages] = useState(false);
 
-  // 全局提取的插画（不随页面切换消失）
+  // 全局提取的插画
   const [globalExtractedImages, setGlobalExtractedImages] = useState<Array<{ imageBase64: string; description: string }>>([]);
 
   // 生成示例脚本
@@ -49,25 +77,32 @@ export default function Home() {
 
   // 从 localStorage 加载配置
   useEffect(() => {
-    const savedConfig = localStorage.getItem('ppt-master-config');
+    const savedConfig = localStorage.getItem('ppt-master-config-v2');
     if (savedConfig) {
       try {
         const parsed = JSON.parse(savedConfig);
-        setGeminiConfig(parsed.state?.geminiConfig || null);
+        setApiConfig(parsed);
       } catch (error) {
         console.error('Failed to load config:', error);
+        // 加载失败时使用默认配置
+        setApiConfig(defaultApiConfig);
       }
+    } else {
+      // 没有保存的配置时使用默认配置
+      setApiConfig(defaultApiConfig);
     }
   }, []);
 
   // 保存配置
-  const handleSaveConfig = (config: GeminiConfig) => {
-    const configData = { state: { geminiConfig: config }, version: 0 };
-    localStorage.setItem('ppt-master-config', JSON.stringify(configData));
-    setGeminiConfig(config);
+  const handleSaveConfig = (config: ApiConfig) => {
+    localStorage.setItem('ppt-master-config-v2', JSON.stringify(config));
+    setApiConfig(config);
   };
 
-  const isConfigured = geminiConfig && geminiConfig.apiUrl && geminiConfig.apiKey;
+  // 检查配置是否有效
+  const isConfigured = apiConfig &&
+    apiConfig.text?.apiUrl && apiConfig.text?.apiKey &&
+    apiConfig.image?.apiUrl && apiConfig.image?.apiKey;
 
   // 更新单个槽位状态
   const updateSlot = useCallback((slotId: string, updates: Partial<ImageSlot>) => {
@@ -76,15 +111,73 @@ export default function Home() {
     ));
   }, []);
 
-  // 生成单张图片
-  const generateSingleImage = async (slotId: string, index: number, signal: AbortSignal) => {
+  // 分析脚本生成描述
+  const handleAnalyzeScript = async () => {
+    if (!script.trim()) {
+      alert('请输入脚本内容');
+      return;
+    }
+    if (!isConfigured) {
+      alert('请先配置 API');
+      setShowConfigPanel(true);
+      return;
+    }
+
+    setGenerationStep('analyzing');
+    setDescription('');
+
+    try {
+      // 加载提示词配置
+      const prompts = loadPromptConfig();
+      const customPrompt = templateImage
+        ? prompts.generateDescriptionWithTemplate
+        : prompts.generateDescription;
+
+      const response = await fetch('/api/generate-description', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          script,
+          custom_prompt: customPrompt,
+          template_base64: templateImage,
+        }),
+      });
+
+      if (!response.ok) {
+        const { error } = await response.json();
+        throw new Error(error || '分析失败');
+      }
+
+      const { description: desc } = await response.json();
+      setDescription(desc);
+      setGenerationStep('analyzed');
+    } catch (error: any) {
+      alert('分析失败：' + error.message);
+      setGenerationStep('idle');
+    }
+  };
+
+  // 生成单张图片（使用描述）
+  const generateSingleImage = async (slotId: string, index: number, signal: AbortSignal, desc: string) => {
     updateSlot(slotId, { status: 'generating', startTime: Date.now() });
 
     try {
+      // 加载提示词配置
+      const prompts = loadPromptConfig();
+      const customPrompt = templateImage
+        ? prompts.generateImage
+        : prompts.generateImageNoTemplate;
+
       const response = await fetch('/api/generate-preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ script, templateImage, geminiConfig }),
+        body: JSON.stringify({
+          script,
+          description: desc,
+          templateImage,
+          apiConfig,
+          custom_prompt: customPrompt,
+        }),
         signal,
       });
 
@@ -116,10 +209,10 @@ export default function Home() {
     }
   };
 
-  // 开始生成
+  // 开始生成图片
   const handleGenerate = async () => {
-    if (!script.trim()) {
-      alert('请输入脚本内容');
+    if (!description.trim()) {
+      alert('请先分析脚本生成画面描述');
       return;
     }
     if (!isConfigured) {
@@ -129,21 +222,19 @@ export default function Home() {
     }
 
     setIsGenerating(true);
+    setGenerationStep('generating');
     setSelectedResult(null);
     setElapsedTime({});
 
-    // 创建 AbortController
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    // 初始化槽位
     const slots: ImageSlot[] = Array.from({ length: generateCount }, (_, i) => ({
       id: `slot-${Date.now()}-${i}`,
       status: 'pending',
     }));
     setImageSlots(slots);
 
-    // 启动计时器
     timerRef.current = setInterval(() => {
       setElapsedTime(prev => {
         const newTime = { ...prev };
@@ -160,18 +251,17 @@ export default function Home() {
       });
     }, 1000);
 
-    // 并发生成，每个完成后立即更新显示
     await Promise.allSettled(
-      slots.map((slot, index) => generateSingleImage(slot.id, index, controller.signal))
+      slots.map((slot, index) => generateSingleImage(slot.id, index, controller.signal, description))
     );
 
-    // 清理
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
     abortControllerRef.current = null;
     setIsGenerating(false);
+    setGenerationStep('analyzed');
   };
 
   // 停止生成
@@ -184,18 +274,19 @@ export default function Home() {
       timerRef.current = null;
     }
     setIsGenerating(false);
+    setGenerationStep('analyzed');
   };
 
-  // 提取插画（添加到全局状态）
+  // 提取插画
   const handleExtractImages = async (croppedImageBase64: string) => {
-    if (!geminiConfig) return;
+    if (!apiConfig) return;
 
     setIsExtractingImages(true);
     try {
       const response = await fetch('/api/extract-images', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ croppedImageBase64, geminiConfig }),
+        body: JSON.stringify({ croppedImageBase64, apiConfig }),
       });
 
       if (response.ok) {
@@ -222,7 +313,7 @@ export default function Home() {
 
   // 生成示例脚本
   const handleGenerateSample = async () => {
-    if (!geminiConfig) {
+    if (!apiConfig) {
       alert('请先配置 API');
       return;
     }
@@ -232,7 +323,7 @@ export default function Home() {
       const response = await fetch('/api/generate-sample', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ geminiConfig }),
+        body: JSON.stringify({ apiConfig }),
       });
 
       if (response.ok) {
@@ -252,14 +343,36 @@ export default function Home() {
   // 获取已完成的结果
   const completedResults = imageSlots.filter(s => s.status === 'completed' && s.result);
 
+  // 批量模式
+  if (mode === 'batch') {
+    return <BatchMode onBack={() => setMode('single')} />;
+  }
+
+  // 单页模式
   return (
     <div className="min-h-screen bg-[#fafafa] dark:bg-[#0a0a0a]">
       {/* 顶部导航 */}
       <nav className="border-b border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-black/80 backdrop-blur-sm sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
-            PPT 参考图生成
-          </h1>
+          <div className="flex items-center gap-6">
+            <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
+              PPT 参考图生成
+            </h1>
+            <div className="flex bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+              <button
+                onClick={() => setMode('single')}
+                className="px-4 py-1.5 text-sm font-medium rounded-md transition-all bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
+              >
+                单页模式
+              </button>
+              <button
+                onClick={() => setMode('batch')}
+                className="px-4 py-1.5 text-sm font-medium rounded-md transition-all text-gray-500 hover:text-gray-700 dark:text-gray-400"
+              >
+                批量模式
+              </button>
+            </div>
+          </div>
           <div className="flex items-center gap-4">
             <button
               onClick={() => setShowPromptSettings(true)}
@@ -279,7 +392,7 @@ export default function Home() {
       </nav>
 
       {/* 弹窗 */}
-      <ConfigPanel isOpen={showConfigPanel} onClose={() => setShowConfigPanel(false)} onSave={handleSaveConfig} initialConfig={geminiConfig} />
+      <ConfigPanel isOpen={showConfigPanel} onClose={() => setShowConfigPanel(false)} onSave={handleSaveConfig} initialConfig={apiConfig} />
       <PromptSettings isOpen={showPromptSettings} onClose={() => setShowPromptSettings(false)} />
 
       {/* 主内容 */}
@@ -303,17 +416,24 @@ export default function Home() {
                 </div>
                 <textarea
                   value={script}
-                  onChange={(e) => setScript(e.target.value)}
+                  onChange={(e) => {
+                    setScript(e.target.value);
+                    // 脚本变更时重置描述和状态
+                    if (description) {
+                      setDescription('');
+                      setGenerationStep('idle');
+                    }
+                  }}
                   className="w-full h-40 px-4 py-3 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-white placeholder-gray-400 resize-none transition-shadow"
                   placeholder="输入这一页PPT要讲的内容..."
-                  disabled={isGenerating}
+                  disabled={isGenerating || generationStep === 'analyzing'}
                 />
               </div>
 
               {/* 模板选择 */}
               <TemplateUpload
                 onImageChange={setTemplateImage}
-                className={isGenerating ? 'pointer-events-none opacity-50' : ''}
+                className={isGenerating || generationStep === 'analyzing' ? 'pointer-events-none opacity-50' : ''}
               />
 
               {/* 生成数量 */}
@@ -326,12 +446,12 @@ export default function Home() {
                     <button
                       key={n}
                       onClick={() => setGenerateCount(n)}
-                      disabled={isGenerating}
+                      disabled={isGenerating || generationStep === 'analyzing'}
                       className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${
                         generateCount === n
                           ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900'
                           : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
-                      } ${isGenerating ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      } ${isGenerating || generationStep === 'analyzing' ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
                       {n}
                     </button>
@@ -339,8 +459,61 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* 生成/停止按钮 */}
-              {isGenerating ? (
+              {/* 画面描述区域 */}
+              {(generationStep !== 'idle' || description) && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      画面描述
+                    </label>
+                    <button
+                      onClick={handleAnalyzeScript}
+                      disabled={generationStep === 'analyzing' || isGenerating || !script.trim()}
+                      className="text-xs text-blue-500 hover:text-blue-600 disabled:text-gray-400 disabled:cursor-not-allowed"
+                    >
+                      {generationStep === 'analyzing' ? '分析中...' : '重新分析'}
+                    </button>
+                  </div>
+                  {generationStep === 'analyzing' ? (
+                    <div className="w-full h-32 px-4 py-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl flex items-center justify-center">
+                      <div className="flex items-center gap-3 text-gray-500">
+                        <div className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />
+                        <span className="text-sm">正在分析脚本内容...</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <textarea
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      className="w-full h-32 px-4 py-3 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-white placeholder-gray-400 resize-none transition-shadow text-sm"
+                      placeholder="AI 分析后的画面描述会显示在这里，你也可以手动编辑..."
+                      disabled={isGenerating}
+                    />
+                  )}
+                  <p className="mt-1 text-xs text-gray-400">
+                    这是 AI 对脚本内容的理解，将用于生成 PPT 画面。你可以编辑调整。
+                  </p>
+                </div>
+              )}
+
+              {/* 分析/生成按钮 */}
+              {generationStep === 'idle' ? (
+                <button
+                  onClick={handleAnalyzeScript}
+                  disabled={!script.trim() || !isConfigured}
+                  className="w-full py-3.5 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white font-medium rounded-xl transition-colors disabled:cursor-not-allowed"
+                >
+                  分析脚本
+                </button>
+              ) : generationStep === 'analyzing' ? (
+                <button
+                  disabled
+                  className="w-full py-3.5 bg-gray-300 dark:bg-gray-700 text-white font-medium rounded-xl cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  分析中...
+                </button>
+              ) : isGenerating ? (
                 <button
                   onClick={handleStop}
                   className="w-full py-3.5 bg-red-500 hover:bg-red-600 text-white font-medium rounded-xl transition-colors"
@@ -350,10 +523,10 @@ export default function Home() {
               ) : (
                 <button
                   onClick={handleGenerate}
-                  disabled={!script.trim()}
-                  className="w-full py-3.5 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white font-medium rounded-xl transition-colors disabled:cursor-not-allowed"
+                  disabled={!description.trim()}
+                  className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white font-medium rounded-xl transition-colors disabled:cursor-not-allowed"
                 >
-                  开始生成
+                  生成参考图
                 </button>
               )}
           </div>

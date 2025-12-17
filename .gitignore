@@ -44,3 +44,14 @@ yarn-error.log*
 /public/uploads
 /public/generated
 /temp
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.log
+
+# Backend uploads
+backend/uploads/

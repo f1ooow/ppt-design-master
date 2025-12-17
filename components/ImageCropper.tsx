@@ -117,7 +117,7 @@ export default function ImageCropper({ imageUrl, onCropComplete, onCancel }: Ima
             </button>
             <button
               onClick={handleExtract}
-              className="px-6 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-colors font-medium"
+              className="px-6 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors font-medium"
             >
               提取这个插画
             </button>
