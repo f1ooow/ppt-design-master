@@ -400,6 +400,71 @@ def extract_single_image():
         return error_response(f"提取插画失败: {str(e)}", 500)
 
 
+@batch_bp.route('/remove-background', methods=['POST'])
+def remove_single_background():
+    """
+    去除单张图片的模板背景
+    """
+    data = request.get_json()
+    if not data:
+        return error_response("请求数据为空", 400)
+
+    image_base64 = data.get('image_base64', '')
+
+    if not image_base64:
+        return error_response("图片数据不能为空", 400)
+
+    try:
+        ai_service = get_ai_service()
+        result_base64 = ai_service.remove_template_background(image_base64)
+
+        if result_base64:
+            return success_response({
+                'image_base64': result_base64
+            }, "去背景成功")
+        else:
+            return error_response("去背景失败，未能获取有效图片", 500)
+
+    except Exception as e:
+        logger.error(f"去背景失败: {e}")
+        return error_response(f"去背景失败: {str(e)}", 500)
+
+
+@batch_bp.route('/clean-image', methods=['POST'])
+def clean_single_image():
+    """
+    清洗单张PPT图片：去除文字和模板装饰，只保留插图/图标
+
+    Request body:
+        {
+            "image_base64": "原始PPT图片的base64数据"
+        }
+    """
+    data = request.get_json()
+    if not data:
+        return error_response("请求数据为空", 400)
+
+    image_base64 = data.get('image_base64', '')
+
+    if not image_base64:
+        return error_response("图片数据不能为空", 400)
+
+    try:
+        ai_service = get_ai_service()
+        result_base64 = ai_service.clean_slide_image(image_base64)
+
+        if result_base64:
+            return success_response({
+                'image_base64': result_base64
+            }, "图片清洗成功")
+        else:
+            return error_response("图片清洗失败，未能获取有效图片", 500)
+
+    except Exception as e:
+        logger.error(f"图片清洗失败: {e}")
+        return error_response(f"图片清洗失败: {str(e)}", 500)
+
+
 @batch_bp.route('/export-ppt', methods=['POST'])
 def export_ppt():
     """

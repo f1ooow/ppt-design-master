@@ -25,10 +25,10 @@ class Config:
     TEXT_API_BASE = os.getenv('TEXT_API_BASE', 'https://cottonapi.cloud/v1')
     TEXT_MODEL = os.getenv('TEXT_MODEL', 'gemini-2.0-flash-exp')
 
-    # 图片生成 API (nanobana/privnode)
-    IMAGE_API_KEY = os.getenv('IMAGE_API_KEY', 'sk-oSyrVIvzQNs0A6XNpGhes2BNe8xNZgiZq6ZCJfHiO0jvMlkA')
-    IMAGE_API_BASE = os.getenv('IMAGE_API_BASE', 'https://privnode.com')
-    IMAGE_MODEL = os.getenv('IMAGE_MODEL', 'gemini-3-pro-image-preview-2k')
+    # 图片生成 API (Gemini 原生 API)
+    IMAGE_API_KEY = os.getenv('IMAGE_API_KEY', 'sk-JKhST3WoFHhwfSvDmfG75zFl9h56XZOFKW8Ir5IJk6DdvCbZ')
+    IMAGE_API_BASE = os.getenv('IMAGE_API_BASE', 'https://api.nkb.nkbpal.cn')
+    IMAGE_MODEL = os.getenv('IMAGE_MODEL', 'gemini-3-pro-image-preview')
 
     # 并发配置
     MAX_DESCRIPTION_WORKERS = int(os.getenv('MAX_DESCRIPTION_WORKERS', 5))

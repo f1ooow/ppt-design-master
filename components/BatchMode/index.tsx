@@ -82,20 +82,12 @@ async function parseExcelWithAI(
   // 构建消息（支持多模态）
   let messages: any[];
   if (templateImage) {
-    // 有模板：使用多模态消息
-    const promptWithTemplate = prompt + `
-
----
-
-**【模板风格参考】**
-请参考下方模板图片的视觉风格（配色、字体风格、装饰元素），在设计每一页时保持风格统一。
-注意：只参考风格，不要照抄模板的具体内容和布局。`;
-
+    // 有模板：使用多模态消息，AI 需要分析模板的布局结构
     messages = [
       {
         role: 'user',
         content: [
-          { type: 'text', text: promptWithTemplate },
+          { type: 'text', text: prompt },
           { type: 'image_url', image_url: { url: templateImage } }
         ]
       }

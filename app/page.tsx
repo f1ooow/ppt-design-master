@@ -7,6 +7,7 @@ import TemplateUpload from '@/components/TemplateUpload';
 import ResultDisplay from '@/components/ResultDisplay';
 import PromptSettings from '@/components/PromptSettings';
 import BatchMode from '@/components/BatchMode';
+import CleanMode from '@/components/CleanMode';
 import { loadPromptConfig } from '@/config/prompts';
 
 // 单个图片的生成状态
@@ -19,7 +20,7 @@ type ImageSlot = {
 };
 
 // 模式类型
-type AppMode = 'single' | 'batch';
+type AppMode = 'single' | 'batch' | 'clean';
 
 // 生成步骤
 type GenerationStep = 'idle' | 'analyzing' | 'analyzed' | 'generating';
@@ -32,9 +33,9 @@ const defaultApiConfig: ApiConfig = {
     model: 'gemini-2.0-flash',
   },
   image: {
-    apiUrl: 'https://privnode.com',
-    apiKey: 'sk-oSyrVIvzQNs0A6XNpGhes2BNe8xNZgiZq6ZCJfHiO0jvMlkA',
-    model: 'gemini-3-pro-image-preview-2k',
+    apiUrl: 'https://api.nkb.nkbpal.cn',
+    apiKey: 'sk-JKhST3WoFHhwfSvDmfG75zFl9h56XZOFKW8Ir5IJk6DdvCbZ',
+    model: 'gemini-3-pro-image-preview',
     extractModel: 'gemini-2.5-flash-image-preview',
   },
 };
@@ -77,6 +78,18 @@ export default function Home() {
 
   // 从 localStorage 加载配置
   useEffect(() => {
+    // 版本号变更，强制使用新配置
+    const configVersion = 'v4';
+    const savedVersion = localStorage.getItem('ppt-master-config-version');
+
+    if (savedVersion !== configVersion) {
+      // 版本不匹配，清除旧配置，使用新默认配置
+      localStorage.removeItem('ppt-master-config-v2');
+      localStorage.setItem('ppt-master-config-version', configVersion);
+      setApiConfig(defaultApiConfig);
+      return;
+    }
+
     const savedConfig = localStorage.getItem('ppt-master-config-v2');
     if (savedConfig) {
       try {
@@ -84,11 +97,9 @@ export default function Home() {
         setApiConfig(parsed);
       } catch (error) {
         console.error('Failed to load config:', error);
-        // 加载失败时使用默认配置
         setApiConfig(defaultApiConfig);
       }
     } else {
-      // 没有保存的配置时使用默认配置
       setApiConfig(defaultApiConfig);
     }
   }, []);
@@ -348,6 +359,11 @@ export default function Home() {
     return <BatchMode onBack={() => setMode('single')} />;
   }
 
+  // 素材清洗模式
+  if (mode === 'clean') {
+    return <CleanMode onBack={() => setMode('single')} />;
+  }
+
   // 单页模式
   return (
     <div className="min-h-screen bg-[#fafafa] dark:bg-[#0a0a0a]">
@@ -370,6 +386,12 @@ export default function Home() {
                 className="px-4 py-1.5 text-sm font-medium rounded-md transition-all text-gray-500 hover:text-gray-700 dark:text-gray-400"
               >
                 批量模式
+              </button>
+              <button
+                onClick={() => setMode('clean')}
+                className="px-4 py-1.5 text-sm font-medium rounded-md transition-all text-gray-500 hover:text-gray-700 dark:text-gray-400"
+              >
+                素材清洗
               </button>
             </div>
           </div>

@@ -67,9 +67,9 @@ export default function ImageGenerator({
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [templateBase64, setTemplateBase64] = useState<string | null>(initialTemplateBase64 || null);
 
-  // 封面页和结束页 - 默认不包含，用户需要的话自己单独生成
-  const [includeCover, setIncludeCover] = useState(false);
-  const [includeEnding, setIncludeEnding] = useState(false);
+  // 封面页和结束页 - 默认包含
+  const [includeCover, setIncludeCover] = useState(true);
+  const [includeEnding, setIncludeEnding] = useState(true);
   const [coverPage, setCoverPage] = useState<ExtraPage>({
     id: 'cover',
     type: 'cover',
@@ -93,6 +93,10 @@ export default function ImageGenerator({
   const [showCropper, setShowCropper] = useState(false);
   const [isExtractingImages, setIsExtractingImages] = useState(false);
   const [extractedImages, setExtractedImages] = useState<string[]>([]);
+  // 去背景相关状态
+  const [isRemovingBg, setIsRemovingBg] = useState(false);
+  const [isRemovingAllBg, setIsRemovingAllBg] = useState(false);
+  const [removingBgCount, setRemovingBgCount] = useState(0);
 
   // 加载模板
   useEffect(() => {
@@ -369,6 +373,161 @@ export default function ImageGenerator({
       setError('提取插画失败：' + error.message);
     } finally {
       setIsExtractingImages(false);
+    }
+  };
+
+  // 单张去背景
+  const handleRemoveBackground = async () => {
+    const currentImg = getCurrentImage();
+    if (!currentImg) return;
+
+    setIsRemovingBg(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/batch/remove-background`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_base64: currentImg }),
+      });
+
+      const result = await response.json();
+
+      if (result.success && result.data?.image_base64) {
+        const newImage = result.data.image_base64;
+
+        // 把去背景后的图片添加到版本历史
+        if (selectedPage?.type === 'cover') {
+          const versions = coverPage.image_versions || [coverPage.image_base64!];
+          setCoverPage(prev => ({
+            ...prev,
+            image_base64: newImage,
+            image_versions: [...versions, newImage],
+            selected_version: versions.length
+          }));
+        } else if (selectedPage?.type === 'ending') {
+          const versions = endingPage.image_versions || [endingPage.image_base64!];
+          setEndingPage(prev => ({
+            ...prev,
+            image_base64: newImage,
+            image_versions: [...versions, newImage],
+            selected_version: versions.length
+          }));
+        } else if (selectedPage && 'index' in selectedPage) {
+          const page = selectedPage.data as ScriptPage;
+          const versions = page.image_versions || [page.image_base64!];
+          onUpdatePage(selectedPage.index, {
+            image_base64: newImage,
+            image_versions: [...versions, newImage],
+            selected_version: versions.length
+          });
+        }
+      } else {
+        throw new Error(result.message || '去背景失败');
+      }
+    } catch (error: any) {
+      setError('去背景失败：' + error.message);
+    } finally {
+      setIsRemovingBg(false);
+    }
+  };
+
+  // 批量去背景
+  const handleRemoveAllBackgrounds = async () => {
+    // 收集所有有图片的页面
+    type BgTask = { type: 'cover' | 'content' | 'ending'; contentIndex?: number; image: string };
+    const tasks: BgTask[] = [];
+
+    if (includeCover && coverPage.image_base64) {
+      tasks.push({ type: 'cover', image: coverPage.image_base64 });
+    }
+    pages.forEach((page, index) => {
+      if (page.image_base64) {
+        tasks.push({ type: 'content', contentIndex: index, image: page.image_base64 });
+      }
+    });
+    if (includeEnding && endingPage.image_base64) {
+      tasks.push({ type: 'ending', image: endingPage.image_base64 });
+    }
+
+    if (tasks.length === 0) {
+      setError('没有可处理的图片');
+      return;
+    }
+
+    setIsRemovingAllBg(true);
+    setRemovingBgCount(0);
+    setError(null);
+
+    let completed = 0;
+    let failed = 0;
+
+    const executeTask = async (task: BgTask) => {
+      try {
+        const response = await fetch(`${API_BASE}/api/batch/remove-background`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_base64: task.image }),
+        });
+
+        const result = await response.json();
+
+        if (result.success && result.data?.image_base64) {
+          const newImage = result.data.image_base64;
+
+          if (task.type === 'cover') {
+            const versions = coverPage.image_versions || [coverPage.image_base64!];
+            setCoverPage(prev => ({
+              ...prev,
+              image_base64: newImage,
+              image_versions: [...versions, newImage],
+              selected_version: versions.length
+            }));
+          } else if (task.type === 'ending') {
+            const versions = endingPage.image_versions || [endingPage.image_base64!];
+            setEndingPage(prev => ({
+              ...prev,
+              image_base64: newImage,
+              image_versions: [...versions, newImage],
+              selected_version: versions.length
+            }));
+          } else if (task.contentIndex !== undefined) {
+            const page = pages[task.contentIndex];
+            const versions = page.image_versions || [page.image_base64!];
+            onUpdatePage(task.contentIndex, {
+              image_base64: newImage,
+              image_versions: [...versions, newImage],
+              selected_version: versions.length
+            });
+          }
+          completed++;
+        } else {
+          failed++;
+        }
+      } catch {
+        failed++;
+      }
+      setRemovingBgCount(completed + failed);
+    };
+
+    // 并发控制（最多 3 个）
+    const executing: Promise<void>[] = [];
+    for (const task of tasks) {
+      const p = executeTask(task);
+      executing.push(p);
+
+      if (executing.length >= MAX_CONCURRENT) {
+        await Promise.race(executing);
+        executing.splice(executing.findIndex(e => e === p), 1);
+      }
+    }
+    await Promise.all(executing);
+
+    setIsRemovingAllBg(false);
+    setRemovingBgCount(0);
+
+    if (failed > 0) {
+      setError(`去背景完成，${completed} 成功，${failed} 失败`);
     }
   };
 
@@ -983,6 +1142,13 @@ ${slideRels}
                   >
                     {isExtractingImages ? '提取中...' : '裁剪提取插画'}
                   </button>
+                  <button
+                    onClick={handleRemoveBackground}
+                    disabled={isRemovingBg || isGenerating}
+                    className="px-3 py-1.5 rounded-lg bg-orange-100 dark:bg-orange-900/30 hover:bg-orange-200 dark:hover:bg-orange-800/30 text-orange-700 dark:text-orange-300 text-xs transition-colors disabled:opacity-50"
+                  >
+                    {isRemovingBg ? '处理中...' : '去背景'}
+                  </button>
                 </>
               )}
             </div>
@@ -1027,6 +1193,29 @@ ${slideRels}
         {/* 批量生成 */}
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-4">
           <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">批量生成</h3>
+
+          {/* 封面页和结尾页开关 */}
+          <div className="flex gap-4 mb-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeCover}
+                onChange={(e) => setIncludeCover(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 text-blue-500 focus:ring-blue-500"
+              />
+              <span className="text-xs text-gray-600 dark:text-gray-400">封面页</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeEnding}
+                onChange={(e) => setIncludeEnding(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 text-blue-500 focus:ring-blue-500"
+              />
+              <span className="text-xs text-gray-600 dark:text-gray-400">结尾页</span>
+            </label>
+          </div>
+
           <div className="flex gap-2 mb-3">
             <button
               onClick={handleBatchGenerate}
@@ -1123,6 +1312,31 @@ ${slideRels}
           {!templateBase64 && templates.length > 0 && (
             <p className="text-xs text-gray-400 mt-2 text-center">不选模板则 AI 自主设计</p>
           )}
+        </div>
+
+        {/* 一键去背景 */}
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-4">
+          <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">去背景</h3>
+          <button
+            onClick={handleRemoveAllBackgrounds}
+            disabled={isRemovingAllBg || totalCompleted === 0}
+            className="w-full px-4 py-3 rounded-xl bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white text-sm font-medium transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {isRemovingAllBg ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                处理中 ({removingBgCount}/{totalCompleted})
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+                一键去背景 ({totalCompleted})
+              </>
+            )}
+          </button>
+          <p className="text-xs text-gray-400 mt-2 text-center">去除模板装饰，保留核心内容</p>
         </div>
 
         {/* 导出 */}
