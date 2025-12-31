@@ -4,12 +4,13 @@
 import json
 import uuid
 import logging
+import httpx
 from typing import List, Dict, Any
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from io import BytesIO
 import openpyxl
-from openai import OpenAI
+from docx import Document
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -45,14 +46,6 @@ class ScriptPage:
         return data
 
 
-def get_ai_client():
-    """获取 AI 客户端（使用文字处理 API）"""
-    return OpenAI(
-        api_key=Config.TEXT_API_KEY,
-        base_url=Config.TEXT_API_BASE
-    )
-
-
 def excel_to_text(file_path: str) -> str:
     """将 Excel 文件转换为文本格式，保留表格结构"""
     wb = openpyxl.load_workbook(file_path, read_only=True)
@@ -69,9 +62,31 @@ def excel_to_text(file_path: str) -> str:
     return '\n'.join(lines)
 
 
+def docx_to_text(file_path: str) -> str:
+    """将 Word 文件转换为文本格式，包括段落和表格"""
+    try:
+        doc = Document(file_path)
+    except Exception as e:
+        logger.error(f"无法解析 Word 文件 {file_path}: {e}")
+        raise ValueError(f"Word 文件解析失败: {e}")
+
+    lines = []
+    # 提取段落
+    for p in doc.paragraphs:
+        if p.text.strip():
+            lines.append(p.text)
+    # 提取表格
+    for table in doc.tables:
+        for row in table.rows:
+            row_text = ' | '.join(cell.text.strip() for cell in row.cells if cell.text.strip())
+            if row_text:
+                lines.append(row_text)
+
+    return '\n'.join(lines)
+
+
 def parse_with_ai(content: str) -> List[Dict[str, Any]]:
-    """使用 AI 智能解析脚本内容"""
-    client = get_ai_client()
+    """使用 AI 智能解析脚本内容（Gemini 原生 API）"""
 
     prompt = f"""你是一个脚本解析助手。请分析以下内容，提取出每一页/每一镜的信息。
 
@@ -101,13 +116,39 @@ def parse_with_ai(content: str) -> List[Dict[str, Any]]:
   {{"shot_number": "2", "segment": "正文", "narration": "今天我们来学习...", "visual_hint": ""}}
 ]"""
 
-    response = client.chat.completions.create(
-        model=Config.TEXT_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-    )
+    # 使用 Gemini 原生 API
+    url = f"{Config.TEXT_API_BASE}/v1beta/models/{Config.TEXT_MODEL}:generateContent"
+    headers = {
+        "x-goog-api-key": Config.TEXT_API_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 8192
+        }
+    }
 
-    result_text = response.choices[0].message.content.strip()
+    with httpx.Client(timeout=120.0) as client:
+        response = client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        result = response.json()
+
+    # 提取文本响应
+    result_text = ""
+    if "candidates" in result and len(result["candidates"]) > 0:
+        candidate = result["candidates"][0]
+        if "content" in candidate and "parts" in candidate["content"]:
+            for part in candidate["content"]["parts"]:
+                if "text" in part:
+                    result_text += part["text"]
+
+    result_text = result_text.strip()
+
+    if not result_text:
+        logger.error("[file_parser] API 返回内容为空")
+        raise ValueError("AI 返回内容为空")
 
     # 清理可能的 markdown 代码块标记
     if result_text.startswith('```'):
@@ -119,17 +160,17 @@ def parse_with_ai(content: str) -> List[Dict[str, Any]]:
             lines = lines[:-1]
         result_text = '\n'.join(lines)
 
+    # 过滤思考过程，提取 JSON 数组
+    import re
+    json_match = re.search(r'\[[\s\S]*\]', result_text)
+    if json_match:
+        result_text = json_match.group()
+
     try:
         pages_data = json.loads(result_text)
-    except json.JSONDecodeError:
-        # 尝试提取 JSON 部分
-        import re
-        match = re.search(r'\[[\s\S]*\]', result_text)
-        if match:
-            pages_data = json.loads(match.group())
-        else:
-            logger.error(f"AI 返回内容无法解析: {result_text[:500]}")
-            raise ValueError("AI 返回的内容无法解析为 JSON")
+    except json.JSONDecodeError as e:
+        logger.error(f"AI 返回内容无法解析: {result_text[:500]}")
+        raise ValueError(f"AI 返回的内容无法解析为 JSON: {e}")
 
     return pages_data
 
@@ -155,6 +196,8 @@ class FileParser:
         # 转换为文本
         if suffix in ['.xlsx', '.xls']:
             text_content = excel_to_text(file_path)
+        elif suffix == '.docx':
+            text_content = docx_to_text(file_path)
         elif suffix in ['.txt', '.md']:
             with open(file_path, 'r', encoding='utf-8') as f:
                 text_content = f.read()
@@ -167,7 +210,8 @@ class FileParser:
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     text_content = f.read()
-            except:
+            except (UnicodeDecodeError, IOError, OSError) as e:
+                logger.error(f"无法读取文件 {file_path}: {e}")
                 raise ValueError(f"不支持的文件格式: {suffix}")
 
         logger.info(f"读取文件内容，长度: {len(text_content)} 字符")

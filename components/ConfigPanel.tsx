@@ -10,19 +10,17 @@ interface ConfigPanelProps {
   initialConfig?: ApiConfig | null;
 }
 
-// 默认配置（包含默认 API 密钥方便快速使用）
+// 默认配置 - 密钥需要用户自行配置
 const defaultConfig: ApiConfig = {
   text: {
-    apiUrl: 'https://cottonapi.cloud/v1',
-    apiKey: 'sk-V5qeMJn0hTs1zr205WO6Zu0D29Y6VM1y4kGbZ9f31HFLj4i5',
-    model: 'gemini-2.0-flash',
-    analysisModel: 'gemini-2.5-pro-preview-06-05',
+    apiUrl: '',
+    apiKey: '',
+    model: 'gemini-3-flash-preview',
   },
   image: {
-    apiUrl: 'https://privnode.com/v1',
-    apiKey: 'sk-oSyrVIvzQNs0A6XNpGhes2BNe8xNZgiZq6ZCJfHiO0jvMlkA',
-    model: 'gemini-3-pro-image-preview-2k',
-    extractModel: 'gemini-2.5-flash-image-preview',
+    apiUrl: '',
+    apiKey: '',
+    model: 'gemini-3-pro-image-preview',
   },
 };
 
@@ -43,15 +41,13 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
       setConfig({
         text: {
           apiUrl: initialConfig.text?.apiUrl || defaultConfig.text.apiUrl,
-          apiKey: initialConfig.text?.apiKey || '',
+          apiKey: initialConfig.text?.apiKey || defaultConfig.text.apiKey,
           model: initialConfig.text?.model || defaultConfig.text.model,
-          analysisModel: initialConfig.text?.analysisModel || defaultConfig.text.analysisModel,
         },
         image: {
           apiUrl: initialConfig.image?.apiUrl || defaultConfig.image.apiUrl,
-          apiKey: initialConfig.image?.apiKey || '',
+          apiKey: initialConfig.image?.apiKey || defaultConfig.image.apiKey,
           model: initialConfig.image?.model || defaultConfig.image.model,
-          extractModel: initialConfig.image?.extractModel || defaultConfig.image.extractModel,
         },
       });
     }
@@ -71,6 +67,7 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
     onClose();
   };
 
+  // 测试 Gemini 原生 API 连接
   const testApiConnection = async (type: 'text' | 'image') => {
     const apiConfig = type === 'text' ? config.text : config.image;
 
@@ -89,24 +86,24 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
     const startTime = Date.now();
 
     try {
-      const url = `${apiConfig.apiUrl.replace(/\/$/, '')}/chat/completions`;
+      // 使用 Gemini 原生 API 格式测试
+      const baseUrl = apiConfig.apiUrl.replace(/\/$/, '');
+      const url = `${baseUrl}/v1beta/models/${apiConfig.model}:generateContent`;
 
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiConfig.apiKey}`,
+          'x-goog-api-key': apiConfig.apiKey,
         },
         body: JSON.stringify({
-          model: apiConfig.model,
-          messages: [
-            {
-              role: 'user',
-              content: 'Hi, please respond with "OK" to confirm the connection.',
-            },
-          ],
-          max_tokens: 10,
-          temperature: 0,
+          contents: [{
+            parts: [{ text: 'Hi, please respond with "OK" to confirm the connection.' }]
+          }],
+          generationConfig: {
+            maxOutputTokens: 10,
+            temperature: 0
+          }
         }),
       });
 
@@ -114,10 +111,17 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
       const responseText = await response.text();
 
       if (!response.ok) {
+        let errorMessage = `连接失败 (${response.status})`;
+        try {
+          const errorData = JSON.parse(responseText);
+          if (errorData.error?.message) {
+            errorMessage = errorData.error.message;
+          }
+        } catch {}
         setTestResult({
           type,
           success: false,
-          message: `连接失败 (${response.status})`,
+          message: errorMessage,
           details: responseText.substring(0, 200),
         });
         return;
@@ -126,7 +130,7 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
       let data;
       try {
         data = JSON.parse(responseText);
-      } catch (e) {
+      } catch {
         setTestResult({
           type,
           success: false,
@@ -136,12 +140,12 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
         return;
       }
 
-      if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+      if (!data.candidates || !data.candidates[0]) {
         setTestResult({
           type,
           success: false,
           message: 'API 返回格式不符合预期',
-          details: '服务商可能不支持 OpenAI 兼容格式',
+          details: '请确认是 Gemini 原生 API',
         });
         return;
       }
@@ -149,16 +153,17 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
       setTestResult({
         type,
         success: true,
-        message: `连接成功！响应时间: ${responseTime}ms`,
+        message: `连接成功! 响应时间: ${responseTime}ms`,
         details: `模型: ${apiConfig.model}`,
       });
 
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : '网络错误，请检查 API 地址';
       setTestResult({
         type,
         success: false,
         message: '连接失败',
-        details: error.message || '网络错误，请检查 API 地址',
+        details: errorMessage,
       });
     } finally {
       setIsTesting(null);
@@ -193,18 +198,18 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
               配置说明
             </h3>
             <ul className="text-sm text-blue-800 dark:text-blue-300 space-y-1 list-disc list-inside">
-              <li><strong>文本 API (Cotton)</strong>：用于脚本分析、内容生成等文本处理</li>
-              <li><strong>图像 API (Privnode)</strong>：用于 PPT 参考图生成、插画提取</li>
-              <li>两套 API 独立配置，可以使用不同的服务商</li>
-              <li>配置将保存在浏览器本地，不会上传到服务器</li>
+              <li><strong>文本 API</strong>：用于脚本分析、内容生成等文本处理</li>
+              <li><strong>图像 API</strong>：用于 PPT 参考图生成、素材清洗、插画提取</li>
+              <li>两套 API 独立配置，可以使用不同的密钥</li>
+              <li>默认使用 Gemini 原生 API 格式</li>
             </ul>
           </div>
 
-          {/* 文本 API 配置 (Cotton) */}
+          {/* 文本 API 配置 */}
           <div className="space-y-4">
             <div className="flex items-center gap-3">
               <h3 className="text-lg font-medium text-gray-900 dark:text-white">
-                文本 API (Cotton)
+                文本 API
               </h3>
               <span className="px-2 py-0.5 text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded">
                 用于文本处理
@@ -223,9 +228,12 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
                     ...config,
                     text: { ...config.text, apiUrl: e.target.value }
                   })}
-                  placeholder="https://cottonapi.cloud/v1"
+                  placeholder="https://api.nkb.nkbpal.cn"
                   className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
                 />
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Gemini 原生 API 格式，不需要加 /v1beta
+                </p>
               </div>
 
               <div>
@@ -264,7 +272,7 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  快速模型
+                  文本模型
                 </label>
                 <input
                   type="text"
@@ -273,30 +281,11 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
                     ...config,
                     text: { ...config.text, model: e.target.value }
                   })}
-                  placeholder="gemini-2.0-flash"
+                  placeholder="gemini-3-flash-preview"
                   className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
                 />
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  用于单页重新生成描述
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  脚本分析模型
-                </label>
-                <input
-                  type="text"
-                  value={config.text.analysisModel || ''}
-                  onChange={(e) => setConfig({
-                    ...config,
-                    text: { ...config.text, analysisModel: e.target.value }
-                  })}
-                  placeholder="gemini-2.5-pro-preview-06-05"
-                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
-                />
-                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  用于整体脚本分析，默认 Gemini 2.5 Pro
+                  用于脚本分析和描述生成
                 </p>
               </div>
 
@@ -336,11 +325,11 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
             </div>
           </div>
 
-          {/* 图像 API 配置 (Privnode) */}
+          {/* 图像 API 配置 */}
           <div className="space-y-4">
             <div className="flex items-center gap-3">
               <h3 className="text-lg font-medium text-gray-900 dark:text-white">
-                图像 API (Privnode)
+                图像 API
               </h3>
               <span className="px-2 py-0.5 text-xs bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded">
                 用于图像生成
@@ -359,9 +348,12 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
                     ...config,
                     image: { ...config.image, apiUrl: e.target.value }
                   })}
-                  placeholder="https://privnode.com"
+                  placeholder="https://api.nkb.nkbpal.cn"
                   className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
                 />
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Gemini 原生 API 格式，不需要加 /v1beta
+                </p>
               </div>
 
               <div>
@@ -400,7 +392,7 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  图像生成模型
+                  图像模型
                 </label>
                 <input
                   type="text"
@@ -409,30 +401,11 @@ export default function ConfigPanel({ isOpen, onClose, onSave, initialConfig }: 
                     ...config,
                     image: { ...config.image, model: e.target.value }
                   })}
-                  placeholder="gemini-3-pro-image-preview-2k"
+                  placeholder="gemini-3-pro-image-preview"
                   className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
                 />
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  用于生成 PPT 参考图
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  插画提取模型
-                </label>
-                <input
-                  type="text"
-                  value={config.image.extractModel}
-                  onChange={(e) => setConfig({
-                    ...config,
-                    image: { ...config.image, extractModel: e.target.value }
-                  })}
-                  placeholder="gemini-2.5-flash-image"
-                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
-                />
-                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  默认使用 flash 版本节省成本，可改为 gemini-3-pro-image-preview 获得更清晰效果
+                  用于 PPT 参考图生成、素材清洗、插画提取
                 </p>
               </div>
 

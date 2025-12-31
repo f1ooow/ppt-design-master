@@ -250,19 +250,45 @@ class TaskManager:
                 return True
         return False
 
+    def cleanup_old_tasks(self, max_age_hours: int = 24):
+        """
+        清理超过指定时间的已完成/已取消/错误任务
+
+        Args:
+            max_age_hours: 任务最大保留时间（小时）
+        """
+        from datetime import timedelta
+        cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+        completed_statuses = {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.ERROR}
+
+        with self._lock:
+            tasks_to_delete = [
+                task_id for task_id, task in self._tasks.items()
+                if task.status in completed_statuses and task.updated_at < cutoff_time
+            ]
+            for task_id in tasks_to_delete:
+                del self._tasks[task_id]
+                logger.info(f"清理过期任务: {task_id}")
+
+        return len(tasks_to_delete)
+
     def shutdown(self):
         """关闭执行器"""
         self._desc_executor.shutdown(wait=False)
         self._image_executor.shutdown(wait=False)
 
 
-# 单例实例
+# 单例实例和锁
 _task_manager: Optional[TaskManager] = None
+_task_manager_lock = Lock()
 
 
 def get_task_manager() -> TaskManager:
-    """获取任务管理器单例"""
+    """获取任务管理器单例（线程安全）"""
     global _task_manager
     if _task_manager is None:
-        _task_manager = TaskManager()
+        with _task_manager_lock:
+            # 双重检查锁定
+            if _task_manager is None:
+                _task_manager = TaskManager()
     return _task_manager

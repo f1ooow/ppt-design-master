@@ -5,7 +5,6 @@ import { ApiConfig, GenerationResult, PPTDesign } from '@/types';
 import ConfigPanel from '@/components/ConfigPanel';
 import TemplateUpload from '@/components/TemplateUpload';
 import ResultDisplay from '@/components/ResultDisplay';
-import PromptSettings from '@/components/PromptSettings';
 import BatchMode from '@/components/BatchMode';
 import CleanMode from '@/components/CleanMode';
 import { loadPromptConfig } from '@/config/prompts';
@@ -25,25 +24,23 @@ type AppMode = 'single' | 'batch' | 'clean';
 // 生成步骤
 type GenerationStep = 'idle' | 'analyzing' | 'analyzed' | 'generating';
 
-// 默认配置（方便快速使用）
+// 默认配置（空值，需要用户配置）
 const defaultApiConfig: ApiConfig = {
   text: {
-    apiUrl: 'https://cottonapi.cloud/v1',
-    apiKey: 'sk-V5qeMJn0hTs1zr205WO6Zu0D29Y6VM1y4kGbZ9f31HFLj4i5',
+    apiUrl: '',
+    apiKey: '',
     model: 'gemini-2.0-flash',
   },
   image: {
-    apiUrl: 'https://api.nkb.nkbpal.cn',
-    apiKey: 'sk-JKhST3WoFHhwfSvDmfG75zFl9h56XZOFKW8Ir5IJk6DdvCbZ',
-    model: 'gemini-3-pro-image-preview',
-    extractModel: 'gemini-2.5-flash-image-preview',
+    apiUrl: '',
+    apiKey: '',
+    model: 'gemini-2.0-flash-exp-image-generation',
   },
 };
 
 export default function Home() {
   const [mode, setMode] = useState<AppMode>('single');
   const [showConfigPanel, setShowConfigPanel] = useState(false);
-  const [showPromptSettings, setShowPromptSettings] = useState(false);
   const [apiConfig, setApiConfig] = useState<ApiConfig | null>(null);
 
   // 表单状态
@@ -55,7 +52,7 @@ export default function Home() {
   const [imageSlots, setImageSlots] = useState<ImageSlot[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
 
-  // 画面描述（新增）
+  // 画面描述（批量模式使用，单页不需要）
   const [description, setDescription] = useState('');
   const [generationStep, setGenerationStep] = useState<GenerationStep>('idle');
 
@@ -79,7 +76,7 @@ export default function Home() {
   // 从 localStorage 加载配置
   useEffect(() => {
     // 版本号变更，强制使用新配置
-    const configVersion = 'v4';
+    const configVersion = 'v5-gemini-native';
     const savedVersion = localStorage.getItem('ppt-master-config-version');
 
     if (savedVersion !== configVersion) {
@@ -168,14 +165,38 @@ export default function Home() {
     }
   };
 
-  // 生成单张图片（使用描述）
-  const generateSingleImage = async (slotId: string, index: number, signal: AbortSignal, desc: string) => {
+  // 生成单张图片（两步流程：先生成描述，再生成图片）
+  const generateSingleImage = async (slotId: string, index: number, signal: AbortSignal) => {
     updateSlot(slotId, { status: 'generating', startTime: Date.now() });
 
     try {
-      // 加载提示词配置
       const prompts = loadPromptConfig();
-      const customPrompt = templateImage
+
+      // 第一步：生成画面描述
+      const descPrompt = templateImage
+        ? prompts.generateDescriptionWithTemplate
+        : prompts.generateDescription;
+
+      const descResponse = await fetch('/api/generate-description', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          script,
+          custom_prompt: descPrompt,
+          template_base64: templateImage,
+        }),
+        signal,
+      });
+
+      if (!descResponse.ok) {
+        const { error } = await descResponse.json();
+        throw new Error(error || '描述生成失败');
+      }
+
+      const { description: pageDescription } = await descResponse.json();
+
+      // 第二步：根据描述生成图片
+      const imagePrompt = templateImage
         ? prompts.generateImage
         : prompts.generateImageNoTemplate;
 
@@ -184,15 +205,15 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           script,
-          description: desc,
+          description: pageDescription,
           templateImage,
           apiConfig,
-          custom_prompt: customPrompt,
+          custom_prompt: imagePrompt,
         }),
         signal,
       });
 
-      if (!response.ok) throw new Error('生成失败');
+      if (!response.ok) throw new Error('图片生成失败');
 
       const { imageBase64 } = await response.json();
 
@@ -222,8 +243,8 @@ export default function Home() {
 
   // 开始生成图片
   const handleGenerate = async () => {
-    if (!description.trim()) {
-      alert('请先分析脚本生成画面描述');
+    if (!script.trim()) {
+      alert('请输入脚本内容');
       return;
     }
     if (!isConfigured) {
@@ -263,7 +284,7 @@ export default function Home() {
     }, 1000);
 
     await Promise.allSettled(
-      slots.map((slot, index) => generateSingleImage(slot.id, index, controller.signal, description))
+      slots.map((slot, index) => generateSingleImage(slot.id, index, controller.signal))
     );
 
     if (timerRef.current) {
@@ -366,56 +387,47 @@ export default function Home() {
 
   // 单页模式
   return (
-    <div className="min-h-screen bg-[#fafafa] dark:bg-[#0a0a0a]">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
       {/* 顶部导航 */}
-      <nav className="border-b border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-black/80 backdrop-blur-sm sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-6">
-            <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
-              PPT 参考图生成
+      <nav className="bg-white/70 dark:bg-slate-900/70 backdrop-blur-xl sticky top-0 z-40 shadow-sm">
+        <div className="max-w-6xl mx-auto px-8 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-8">
+            <h1 className="text-xl font-bold bg-gradient-to-r from-slate-800 to-slate-600 dark:from-white dark:to-slate-300 bg-clip-text text-transparent">
+              PPT Design
             </h1>
-            <div className="flex bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+            <div className="flex gap-1 p-1 bg-slate-100/80 dark:bg-slate-800/80 rounded-xl">
               <button
                 onClick={() => setMode('single')}
-                className="px-4 py-1.5 text-sm font-medium rounded-md transition-all bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
+                className="px-5 py-2 text-sm font-medium rounded-lg transition-all duration-200 bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm"
               >
-                单页模式
+                Single
               </button>
               <button
                 onClick={() => setMode('batch')}
-                className="px-4 py-1.5 text-sm font-medium rounded-md transition-all text-gray-500 hover:text-gray-700 dark:text-gray-400"
+                className="px-5 py-2 text-sm font-medium rounded-lg transition-all duration-200 text-slate-500 hover:text-slate-800 hover:bg-white/50 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-700/50"
               >
-                批量模式
+                Batch
               </button>
               <button
                 onClick={() => setMode('clean')}
-                className="px-4 py-1.5 text-sm font-medium rounded-md transition-all text-gray-500 hover:text-gray-700 dark:text-gray-400"
+                className="px-5 py-2 text-sm font-medium rounded-lg transition-all duration-200 text-slate-500 hover:text-slate-800 hover:bg-white/50 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-700/50"
               >
-                素材清洗
+                Clean
               </button>
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setShowPromptSettings(true)}
-              className="text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white transition-colors"
-            >
-              提示词
-            </button>
-            <button
-              onClick={() => setShowConfigPanel(true)}
-              className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white transition-colors"
-            >
-              <span className={`w-1.5 h-1.5 rounded-full ${isConfigured ? 'bg-emerald-500' : 'bg-red-500'}`} />
-              API 设置
-            </button>
-          </div>
+          <button
+            onClick={() => setShowConfigPanel(true)}
+            className="flex items-center gap-2.5 px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white bg-slate-100/80 hover:bg-slate-200/80 dark:bg-slate-800/80 dark:hover:bg-slate-700/80 rounded-xl transition-all duration-200"
+          >
+            <span className={`w-2 h-2 rounded-full ${isConfigured ? 'bg-emerald-500' : 'bg-rose-500'} ring-2 ring-offset-2 ring-offset-slate-100 dark:ring-offset-slate-800 ${isConfigured ? 'ring-emerald-500/30' : 'ring-rose-500/30'}`} />
+            API
+          </button>
         </div>
       </nav>
 
       {/* 弹窗 */}
       <ConfigPanel isOpen={showConfigPanel} onClose={() => setShowConfigPanel(false)} onSave={handleSaveConfig} initialConfig={apiConfig} />
-      <PromptSettings isOpen={showPromptSettings} onClose={() => setShowPromptSettings(false)} />
 
       {/* 主内容 */}
       <main className="max-w-7xl mx-auto px-6 py-8">
@@ -481,61 +493,8 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* 画面描述区域 */}
-              {(generationStep !== 'idle' || description) && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                      画面描述
-                    </label>
-                    <button
-                      onClick={handleAnalyzeScript}
-                      disabled={generationStep === 'analyzing' || isGenerating || !script.trim()}
-                      className="text-xs text-blue-500 hover:text-blue-600 disabled:text-gray-400 disabled:cursor-not-allowed"
-                    >
-                      {generationStep === 'analyzing' ? '分析中...' : '重新分析'}
-                    </button>
-                  </div>
-                  {generationStep === 'analyzing' ? (
-                    <div className="w-full h-32 px-4 py-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl flex items-center justify-center">
-                      <div className="flex items-center gap-3 text-gray-500">
-                        <div className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />
-                        <span className="text-sm">正在分析脚本内容...</span>
-                      </div>
-                    </div>
-                  ) : (
-                    <textarea
-                      value={description}
-                      onChange={(e) => setDescription(e.target.value)}
-                      className="w-full h-32 px-4 py-3 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-white placeholder-gray-400 resize-none transition-shadow text-sm"
-                      placeholder="AI 分析后的画面描述会显示在这里，你也可以手动编辑..."
-                      disabled={isGenerating}
-                    />
-                  )}
-                  <p className="mt-1 text-xs text-gray-400">
-                    这是 AI 对脚本内容的理解，将用于生成 PPT 画面。你可以编辑调整。
-                  </p>
-                </div>
-              )}
-
-              {/* 分析/生成按钮 */}
-              {generationStep === 'idle' ? (
-                <button
-                  onClick={handleAnalyzeScript}
-                  disabled={!script.trim() || !isConfigured}
-                  className="w-full py-3.5 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white font-medium rounded-xl transition-colors disabled:cursor-not-allowed"
-                >
-                  分析脚本
-                </button>
-              ) : generationStep === 'analyzing' ? (
-                <button
-                  disabled
-                  className="w-full py-3.5 bg-gray-300 dark:bg-gray-700 text-white font-medium rounded-xl cursor-not-allowed flex items-center justify-center gap-2"
-                >
-                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  分析中...
-                </button>
-              ) : isGenerating ? (
+              {/* 生成按钮 */}
+              {isGenerating ? (
                 <button
                   onClick={handleStop}
                   className="w-full py-3.5 bg-red-500 hover:bg-red-600 text-white font-medium rounded-xl transition-colors"
@@ -545,7 +504,7 @@ export default function Home() {
               ) : (
                 <button
                   onClick={handleGenerate}
-                  disabled={!description.trim()}
+                  disabled={!script.trim() || !isConfigured}
                   className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white font-medium rounded-xl transition-colors disabled:cursor-not-allowed"
                 >
                   生成参考图

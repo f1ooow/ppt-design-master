@@ -1,23 +1,21 @@
-// 文本处理 API 配置 (Cotton)
+// 文本处理 API 配置 (Gemini 原生)
 export interface TextApiConfig {
-  apiUrl: string;        // API 地址 (如: https://cottonapi.cloud/v1)
+  apiUrl: string;        // API 地址 (如: https://api.nkb.nkbpal.cn)
   apiKey: string;        // API 密钥
-  model: string;         // 快速模型 (如: gemini-2.0-flash)
-  analysisModel?: string; // 复杂分析模型 (如: gemini-2.5-pro)，用于整体脚本分析
+  model: string;         // 文本模型 (如: gemini-3-flash-preview)
 }
 
-// 图像处理 API 配置 (Privnode)
+// 图像处理 API 配置 (Gemini 原生)
 export interface ImageApiConfig {
-  apiUrl: string;        // API 地址 (如: https://privnode.com)
+  apiUrl: string;        // API 地址 (如: https://api.nkb.nkbpal.cn)
   apiKey: string;        // API 密钥
-  model: string;         // 模型名称 (如: gemini-3-pro-image-preview-2k)
-  extractModel: string;  // 插画提取模型 (如: gemini-2.5-flash-image-preview)
+  model: string;         // 图片模型 (如: gemini-3-pro-image-preview)
 }
 
 // 完整的 API 配置
 export interface ApiConfig {
-  text: TextApiConfig;   // 文本处理 API (Cotton)
-  image: ImageApiConfig; // 图像处理 API (Privnode)
+  text: TextApiConfig;   // 文本处理 API
+  image: ImageApiConfig; // 图像处理 API
 }
 
 // 兼容旧版配置类型（保留用于迁移）
@@ -45,6 +43,9 @@ export interface PromptConfig {
   generateImageNoTemplate: string;      // 内容页图片生成（无模板）
   generateImageCover: string;           // 封面页图片生成
   generateImageEnding: string;          // 片尾页图片生成
+  // 直接生图（跳过描述步骤，NotebookLM 风格）
+  generateImageDirect: string;          // 直接生图（无模板）
+  generateImageDirectWithTemplate: string; // 直接生图（有模板）
 }
 
 // 课程元信息（从Excel中提取）

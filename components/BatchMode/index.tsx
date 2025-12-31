@@ -47,25 +47,58 @@ function detectPageType(segment: string, narration: string, index: number, total
   return 'content';
 }
 
+// 从文件中提取文本内容
+async function extractTextFromFile(file: File): Promise<string> {
+  const ext = file.name.split('.').pop()?.toLowerCase();
+
+  if (ext === 'xlsx' || ext === 'xls') {
+    // Excel: 前端用 XLSX 库解析
+    const data = await file.arrayBuffer();
+    const workbook = XLSX.read(data, { type: 'array' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const jsonData = XLSX.utils.sheet_to_json<any>(sheet, { header: 1, defval: '' });
+    if (jsonData.length < 2) {
+      throw new Error('文件内容为空');
+    }
+    return jsonData.map((row: any[], i: number) => `第${i}行: ${JSON.stringify(row)}`).join('\n');
+  } else if (ext === 'docx') {
+    // Word: 调用后端 API 解析
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch(`${API_BASE}/api/batch/upload`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.message || 'Word 文件解析失败');
+    }
+    const result = await response.json();
+    // 后端返回的是解析好的页面，转成文本格式供 AI 分析
+    return result.data.pages.map((p: any, i: number) =>
+      `第${i}行: 镜号=${p.shot_number}, 环节=${p.segment}, 讲稿=${p.narration}, 画面=${p.visual_hint}`
+    ).join('\n');
+  } else if (ext === 'txt' || ext === 'md') {
+    // 纯文本: 直接读取
+    return await file.text();
+  } else if (ext === 'json') {
+    // JSON: 读取并格式化
+    const text = await file.text();
+    const data = JSON.parse(text);
+    return JSON.stringify(data, null, 2);
+  }
+  throw new Error(`不支持的文件格式: ${ext}`);
+}
+
 // 用AI整体分析脚本（拆分镜头 + 生成描述，一步到位）
-async function parseExcelWithAI(
-  data: ArrayBuffer,
+async function parseFileWithAI(
+  file: File,
   apiConfig: ApiConfig,
   templateImage?: string | null
 ): Promise<ParsedExcelResult> {
-  const workbook = XLSX.read(data, { type: 'array' });
-  const sheetName = workbook.SheetNames[0];
-  const sheet = workbook.Sheets[sheetName];
-  const jsonData = XLSX.utils.sheet_to_json<any>(sheet, { header: 1, defval: '' });
-
-  if (jsonData.length < 2) {
-    throw new Error('文件内容为空');
-  }
-
-  // 全部数据发给AI
-  const allRowsText = jsonData.map((row: any[], i: number) =>
-    `第${i}行: ${JSON.stringify(row)}`
-  ).join('\n');
+  // 提取文本内容
+  const allRowsText = await extractTextFromFile(file);
 
   // 加载提示词配置
   const prompts = loadPromptConfig();
@@ -74,38 +107,36 @@ async function parseExcelWithAI(
   const basePrompt = prompts.analyzeFullScript || '';
   const prompt = basePrompt.replace('{{scriptContent}}', allRowsText);
 
-  // 使用复杂分析模型（如果配置了的话）
-  const analysisModel = apiConfig.text.analysisModel || apiConfig.text.model || 'gemini-2.0-flash';
+  console.log('[脚本分析] 使用模型:', apiConfig.text.model, '有模板:', !!templateImage);
 
-  console.log('[脚本分析] 使用模型:', analysisModel, '有模板:', !!templateImage);
+  // 构建 Gemini 原生 API 请求
+  const parts: any[] = [{ text: prompt }];
 
-  // 构建消息（支持多模态）
-  let messages: any[];
-  if (templateImage) {
-    // 有模板：使用多模态消息，AI 需要分析模板的布局结构
-    messages = [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt },
-          { type: 'image_url', image_url: { url: templateImage } }
-        ]
-      }
-    ];
-  } else {
-    // 无模板：纯文本
-    messages = [{ role: 'user', content: prompt }];
+  // 如果有模板图片，添加到 parts
+  if (templateImage && templateImage.startsWith('data:')) {
+    const match = templateImage.match(/data:(image\/[^;]+);base64,(.+)/);
+    if (match) {
+      parts.push({
+        inline_data: {
+          mime_type: match[1],
+          data: match[2]
+        }
+      });
+    }
   }
 
-  const response = await fetch(`${apiConfig.text.apiUrl}/chat/completions`, {
+  const response = await fetch(`${apiConfig.text.apiUrl}/v1beta/models/${apiConfig.text.model}:generateContent`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiConfig.text.apiKey}`,
+      'x-goog-api-key': apiConfig.text.apiKey,
     },
     body: JSON.stringify({
-      model: analysisModel,
-      messages,
+      contents: [{ parts }],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 8192
+      }
     }),
   });
 
@@ -116,7 +147,21 @@ async function parseExcelWithAI(
   }
 
   const result = await response.json();
-  const aiText = result.choices?.[0]?.message?.content || '';
+
+  // 从 Gemini 响应中提取文本
+  let aiText = '';
+  if (result.candidates?.[0]?.content?.parts) {
+    for (const part of result.candidates[0].content.parts) {
+      if (part.text) {
+        aiText += part.text;
+      }
+    }
+  }
+
+  if (!aiText) {
+    console.error('[脚本分析] API返回内容为空');
+    throw new Error('AI返回内容为空');
+  }
 
   // 提取JSON
   const jsonMatch = aiText.match(/\{[\s\S]*\}/);
@@ -222,9 +267,8 @@ export default function BatchMode({ onBack }: BatchModeProps) {
     setError(null);
 
     try {
-      const arrayBuffer = await uploadedFile.arrayBuffer();
       // 传递模板图片给AI，一次性完成拆分和描述生成
-      const { pages: parsedPages, courseMetadata: metadata } = await parseExcelWithAI(arrayBuffer, apiConfig, templateImage);
+      const { pages: parsedPages, courseMetadata: metadata } = await parseFileWithAI(uploadedFile, apiConfig, templateImage);
       setPages(parsedPages);
       setCourseMetadata(metadata);
 

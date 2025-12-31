@@ -1,5 +1,5 @@
 """
-AI 服务 - 文字使用 cottonapi，图片使用 nanobana (privnode)
+AI 服务 - 文字和图片统一使用 Gemini 原生 API
 提示词统一由前端管理并通过 custom_prompt 参数传递
 """
 import re
@@ -7,11 +7,38 @@ import logging
 import base64
 import httpx
 from typing import Optional
-from openai import OpenAI
 
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def extract_chinese_content(text: str) -> str:
+    """
+    从模型输出中提取纯中文内容，过滤掉英文思考过程
+    """
+    if not text:
+        return text
+
+    # 按行分割
+    lines = text.strip().split('\n')
+    chinese_lines = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # 跳过纯英文行（包括 markdown 标题）
+        if re.match(r'^[\*#\s]*[A-Za-z][A-Za-z\s\-\*#:,\.\'\"]+$', line):
+            continue
+        # 跳过以英文开头的句子（思考过程）
+        if re.match(r'^(Okay|So|Let|I\'m|The|That|Here|This|Now|First|But|It|Done|Alright)', line):
+            continue
+        # 保留包含中文的行
+        if re.search(r'[\u4e00-\u9fff]', line):
+            chinese_lines.append(line)
+
+    return '\n'.join(chinese_lines).strip() if chinese_lines else text
 
 
 class AIService:
@@ -19,15 +46,12 @@ class AIService:
 
     def __init__(self):
         """初始化 AI 服务"""
-        # 文字处理客户端 (cottonapi)
-        self.text_client = OpenAI(
-            api_key=Config.TEXT_API_KEY,
-            base_url=Config.TEXT_API_BASE,
-            timeout=120.0
-        )
+        # 文字处理配置 (Gemini 原生 API)
+        self.text_api_base = Config.TEXT_API_BASE
+        self.text_api_key = Config.TEXT_API_KEY
         self.text_model = Config.TEXT_MODEL
 
-        # 图片生成配置 (nanobana/privnode)
+        # 图片生成配置 (Gemini 原生 API)
         self.image_api_base = Config.IMAGE_API_BASE
         self.image_api_key = Config.IMAGE_API_KEY
         self.image_model = Config.IMAGE_MODEL
@@ -60,33 +84,72 @@ class AIService:
         prompt = custom_prompt.replace('{{narration}}', narration)
         if visual_hint:
             prompt = prompt.replace('{{visual_hint}}', visual_hint)
+
+        # 在 prompt 开头添加强制指令
+        prompt = f"【重要】直接输出最终结果，禁止输出任何思考过程、分析步骤、英文内容。\n\n{prompt}"
         logger.info(f"[文字API] 生成页面描述，镜号: {shot_number}, 有模板: {template_base64 is not None}")
 
-        try:
-            # 如果有模板图片，使用多模态消息
-            if template_base64:
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": template_base64}
-                            }
-                        ]
-                    }
-                ]
-            else:
-                messages = [{"role": "user", "content": prompt}]
+        # 使用配置的模型
+        desc_model = self.text_model
+        url = f"{self.text_api_base}/v1beta/models/{desc_model}:generateContent"
+        headers = {
+            "x-goog-api-key": self.text_api_key,
+            "Content-Type": "application/json"
+        }
 
-            response = self.text_client.chat.completions.create(
-                model=self.text_model,
-                messages=messages
-            )
-            description = response.choices[0].message.content
-            logger.info(f"[文字API] 描述生成成功，长度: {len(description)}")
-            return description
+        # 构建请求内容
+        parts = [{"text": prompt}]
+
+        # 如果有模板图片，添加到 parts
+        if template_base64:
+            if template_base64.startswith('data:'):
+                match = re.match(r'data:(image/[^;]+);base64,(.+)', template_base64)
+                if match:
+                    mime_type = match.group(1)
+                    image_data = match.group(2)
+                    parts.append({
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": image_data
+                        }
+                    })
+                else:
+                    logger.warning(f"[文字API] 模板图片 data URL 格式无效，跳过模板")
+
+        payload = {
+            "systemInstruction": {
+                "parts": [{"text": "你只输出最终结果，不输出任何思考过程、分析步骤或英文内容。直接给出答案。"}]
+            },
+            "contents": [{"parts": parts}],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 2048
+            }
+        }
+
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                response = client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+
+                result = response.json()
+
+                # 提取文本响应
+                if "candidates" in result and len(result["candidates"]) > 0:
+                    candidate = result["candidates"][0]
+                    if "content" in candidate and "parts" in candidate["content"]:
+                        for part in candidate["content"]["parts"]:
+                            if "text" in part:
+                                description = part["text"]
+                                logger.info(f"[文字API] 描述生成成功，长度: {len(description)}")
+                                return description
+
+                logger.error(f"[文字API] 响应中没有文本数据")
+                raise ValueError("API 响应中没有文本数据")
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"[文字API] HTTP 错误 {e.response.status_code}: {e.response.text[:200]}")
+            raise
         except Exception as e:
             logger.error(f"[文字API] 生成页面描述失败: {e}")
             raise
@@ -157,6 +220,8 @@ class AIService:
                             "data": image_data
                         }
                     })
+                else:
+                    logger.warning(f"[图片API] 模板图片 data URL 格式无效，跳过模板")
         else:
             text_prompt = f"""生成一张专业的PPT幻灯片图片，16:9比例。
 
@@ -193,7 +258,8 @@ class AIService:
         logger.info(f"[图片API] 生成图片，prompt长度: {len(prompt)}, 比例: {aspect_ratio}, 有模板: {template_base64 is not None}")
 
         try:
-            with httpx.Client(timeout=None) as client:
+            # 图片生成可能需要较长时间，设置 5 分钟超时
+            with httpx.Client(timeout=300.0) as client:
                 response = client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
 
@@ -247,7 +313,8 @@ class AIService:
             raise ValueError("必须提供 custom_prompt 参数，提示词由前端统一管理")
 
         # 使用自定义提示词并替换变量
-        prompt = custom_prompt.replace('{{script}}', narration)
+        # 同时支持 {{script}} 和 {{narration}} 两种变量名
+        prompt = custom_prompt.replace('{{script}}', narration).replace('{{narration}}', narration)
         if description:
             prompt = prompt.replace('{{description}}', description)
         logger.info(f"[图片API] 使用自定义提示词生成PPT图片，类型: {page_type}")
@@ -288,6 +355,8 @@ class AIService:
                             "data": image_data
                         }
                     })
+                else:
+                    logger.warning(f"[图片API] 输入图片 data URL 格式无效，跳过图片")
 
         payload = {
             "contents": [{"parts": parts}],
@@ -303,7 +372,8 @@ class AIService:
         logger.info(f"[图片API] {log_action}")
 
         try:
-            with httpx.Client(timeout=None) as client:
+            # 图片生成可能需要较长时间，设置 5 分钟超时
+            with httpx.Client(timeout=300.0) as client:
                 response = client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
 
@@ -415,13 +485,17 @@ class AIService:
         return self._call_gemini_image_api(prompt, image_base64, "清洗PPT图片")
 
 
-# 单例实例
+# 单例实例和锁
 _ai_service: Optional[AIService] = None
+_ai_service_lock = __import__('threading').Lock()
 
 
 def get_ai_service() -> AIService:
-    """获取 AI 服务单例"""
+    """获取 AI 服务单例（线程安全）"""
     global _ai_service
     if _ai_service is None:
-        _ai_service = AIService()
+        with _ai_service_lock:
+            # 双重检查锁定
+            if _ai_service is None:
+                _ai_service = AIService()
     return _ai_service

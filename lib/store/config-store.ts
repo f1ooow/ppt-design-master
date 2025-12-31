@@ -1,39 +1,41 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { GeminiConfig } from '@/types';
+import { ApiConfig } from '@/types';
 
 interface ConfigState {
-  geminiConfig: GeminiConfig | null;
-  setGeminiConfig: (config: GeminiConfig) => void;
+  apiConfig: ApiConfig | null;
+  setApiConfig: (config: ApiConfig) => void;
   clearConfig: () => void;
   isConfigured: () => boolean;
 }
 
 /**
- * Gemini 配置状态管理
+ * API 配置状态管理
  * 使用 localStorage 持久化存储
  */
 export const useConfigStore = create<ConfigState>()(
   persist(
     (set, get) => ({
-      geminiConfig: null,
+      apiConfig: null,
 
-      setGeminiConfig: (config: GeminiConfig) => {
-        set({ geminiConfig: config });
+      setApiConfig: (config: ApiConfig) => {
+        set({ apiConfig: config });
       },
 
       clearConfig: () => {
-        set({ geminiConfig: null });
+        set({ apiConfig: null });
       },
 
       isConfigured: () => {
-        const config = get().geminiConfig;
+        const config = get().apiConfig;
         return !!(
           config &&
-          config.apiUrl &&
-          config.apiKey &&
-          config.modelPro &&
-          config.modelImage
+          config.text?.apiUrl &&
+          config.text?.apiKey &&
+          config.text?.model &&
+          config.image?.apiUrl &&
+          config.image?.apiKey &&
+          config.image?.model
         );
       },
     }),

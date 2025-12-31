@@ -17,19 +17,27 @@ export async function POST(request: NextRequest) {
 
     const textApi = (apiConfig as ApiConfig).text;
 
-    const response = await fetch(`${textApi.apiUrl}/chat/completions`, {
+    // 使用用户配置的模型
+    const sampleModel = textApi.model;
+
+    // 使用 Gemini 原生 API 格式
+    const response = await fetch(`${textApi.apiUrl}/v1beta/models/${sampleModel}:generateContent`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${textApi.apiKey}`,
+        'x-goog-api-key': textApi.apiKey,
       },
       body: JSON.stringify({
-        model: textApi.model,
-        messages: [
-          { role: 'user', content: SYSTEM_PROMPTS.generateSample }
-        ],
-        max_tokens: 200,
-        temperature: 0.9,
+        systemInstruction: {
+          parts: [{ text: '你只输出纯中文内容，不输出任何英文、思考过程、解释说明。直接给出最终答案。' }]
+        },
+        contents: [{
+          parts: [{ text: SYSTEM_PROMPTS.generateSample }]
+        }],
+        generationConfig: {
+          temperature: 0.9,
+          maxOutputTokens: 200
+        }
       }),
     });
 
@@ -39,7 +47,17 @@ export async function POST(request: NextRequest) {
     }
 
     const data = await response.json();
-    const content = data.choices?.[0]?.message?.content?.trim();
+
+    // 从 Gemini 响应中提取文本
+    let content = '';
+    if (data.candidates?.[0]?.content?.parts) {
+      for (const part of data.candidates[0].content.parts) {
+        if (part.text) {
+          content += part.text;
+        }
+      }
+    }
+    content = content.trim();
 
     if (!content) {
       throw new Error('生成内容为空');

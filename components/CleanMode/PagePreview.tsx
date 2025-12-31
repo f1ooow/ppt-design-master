@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import JSZip from 'jszip';
 import type { SlideImage } from './types';
 
@@ -17,22 +17,98 @@ export default function PagePreview({ images, onImagesUpdate, onBack }: PagePrev
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [showingOriginal, setShowingOriginal] = useState<Set<string>>(new Set());
 
+  // 用于追踪当前 session，防止旧请求覆盖新数据
+  const sessionRef = useRef<string>('');
+  const abortControllerRef = useRef<AbortController | null>(null);
+  // 保存最新的 images 引用，避免闭包问题
+  const imagesRef = useRef<SlideImage[]>(images);
+
+  // 同步 imagesRef
+  useEffect(() => {
+    imagesRef.current = images;
+  }, [images]);
+
+  // 当 images 数组的第一个元素的 id 改变时，说明上传了新文件
+  useEffect(() => {
+    const newSessionId = images[0]?.id || '';
+    if (sessionRef.current && sessionRef.current !== newSessionId) {
+      // 新文件上传，取消正在进行的请求
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      setIsProcessing(false);
+      setCurrentIndex(-1);
+    }
+    sessionRef.current = newSessionId;
+  }, [images]);
+
   const processedCount = images.filter(img => img.status === 'completed').length;
   const errorCount = images.filter(img => img.status === 'error').length;
 
-  const cleanImage = async (image: SlideImage, index: number): Promise<SlideImage> => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超时
+  // 压缩图片到指定大小以下
+  const compressImage = async (base64: string, maxSizeKB: number = 1500): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+
+        const maxDimension = 2000;
+        if (width > maxDimension || height > maxDimension) {
+          const ratio = Math.min(maxDimension / width, maxDimension / height);
+          width = Math.floor(width * ratio);
+          height = Math.floor(height * ratio);
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+
+        let quality = 0.8;
+        let result = canvas.toDataURL('image/jpeg', quality);
+
+        while (result.length > maxSizeKB * 1024 * 1.37 && quality > 0.3) {
+          quality -= 0.1;
+          result = canvas.toDataURL('image/jpeg', quality);
+        }
+
+        resolve(result);
+      };
+      img.src = base64;
+    });
+  };
+
+  const cleanImage = async (image: SlideImage, index: number, signal?: AbortSignal): Promise<SlideImage> => {
+    const timeoutId = setTimeout(() => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    }, 120000);
 
     try {
+      const compressedBase64 = await compressImage(image.originalBase64);
+
       const response = await fetch(`${API_BASE}/api/batch/clean-image`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_base64: image.originalBase64 }),
-        signal: controller.signal
+        body: JSON.stringify({ image_base64: compressedBase64 }),
+        signal: signal || abortControllerRef.current?.signal
       });
 
-      const data = await response.json();
+      if (!response.ok) {
+        return { ...image, status: 'error', error: `请求失败: ${response.status}` };
+      }
+
+      const text = await response.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return { ...image, status: 'error', error: '服务器返回格式错误' };
+      }
+
       console.log('[Clean] API Response:', data.success, !!data.data?.image_base64);
 
       if (data.success && data.data?.image_base64) {
@@ -51,38 +127,76 @@ export default function PagePreview({ images, onImagesUpdate, onBack }: PagePrev
   };
 
   const handleCleanAll = async () => {
-    setIsProcessing(true);
-    const updatedImages = [...images];
+    const currentSession = sessionRef.current;
+    abortControllerRef.current = new AbortController();
 
-    for (let i = 0; i < updatedImages.length; i++) {
-      if (updatedImages[i].status === 'completed') continue;
+    setIsProcessing(true);
+
+    for (let i = 0; i < imagesRef.current.length; i++) {
+      // 检查 session 是否仍然有效（用户可能上传了新文件）
+      if (sessionRef.current !== currentSession) {
+        console.log('[Clean] Session changed, stopping batch clean');
+        break;
+      }
+
+      if (imagesRef.current[i].status === 'completed') continue;
 
       setCurrentIndex(i);
-      updatedImages[i] = { ...updatedImages[i], status: 'processing' };
-      onImagesUpdate([...updatedImages]);
+      // 设置当前图片为 processing
+      const processingImages = imagesRef.current.map((img, idx) =>
+        idx === i ? { ...img, status: 'processing' as const } : img
+      );
+      onImagesUpdate(processingImages);
 
-      const result = await cleanImage(updatedImages[i], i);
-      updatedImages[i] = result;
-      onImagesUpdate([...updatedImages]);
+      const result = await cleanImage(imagesRef.current[i], i);
+
+      // 再次检查 session
+      if (sessionRef.current !== currentSession) {
+        console.log('[Clean] Session changed after API call, not updating');
+        break;
+      }
+
+      // 使用最新的 imagesRef 更新
+      const updatedImages = imagesRef.current.map((img, idx) =>
+        idx === i ? result : img
+      );
+      onImagesUpdate(updatedImages);
     }
 
-    setCurrentIndex(-1);
-    setIsProcessing(false);
+    // 只有当 session 仍然有效时才重置状态
+    if (sessionRef.current === currentSession) {
+      setCurrentIndex(-1);
+      setIsProcessing(false);
+    }
   };
 
   const handleCleanSingle = async (index: number) => {
-    // 1. 设置 processing 状态（使用函数式更新避免闭包问题）
-    onImagesUpdate(prev => prev.map((img, i) =>
-      i === index ? { ...img, status: 'processing' } : img
-    ));
+    const currentSession = sessionRef.current;
+    const targetImage = imagesRef.current[index];
+
+    // 创建新的 AbortController
+    abortControllerRef.current = new AbortController();
+
+    // 1. 设置 processing 状态
+    const processingImages = imagesRef.current.map((img, i) =>
+      i === index ? { ...img, status: 'processing' as const } : img
+    );
+    onImagesUpdate(processingImages);
 
     // 2. 调用 API
-    const result = await cleanImage(images[index], index);
+    const result = await cleanImage(targetImage, index);
 
-    // 3. 更新结果（使用函数式更新确保状态一致）
-    onImagesUpdate(prev => prev.map((img, i) =>
+    // 3. 检查 session 是否仍然有效
+    if (sessionRef.current !== currentSession) {
+      console.log('[Clean] Session changed, not updating single image');
+      return;
+    }
+
+    // 4. 使用最新的 imagesRef 更新结果，只更新对应 index 的图片
+    const updatedImages = imagesRef.current.map((img, i) =>
       i === index ? result : img
-    ));
+    );
+    onImagesUpdate(updatedImages);
   };
 
   const handleDownloadAll = async () => {

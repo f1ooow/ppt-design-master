@@ -95,44 +95,12 @@ ${templateInfo ? `模板信息：\n${JSON.stringify(templateInfo, null, 2)}` : '
 
   /**
    * 生成参考预览图
+   * @deprecated 此方法已弃用，请使用 GeminiNativeClient.generatePreviewImage
    */
-  async generatePreviewImage(design: any, templateInfo?: any): Promise<string> {
-    const model = this.getImageModel();
-
-    const prompt = `
-创建一个精美的 PPT 页面设计图，要求如下：
-
-标题：${design.title}
-${design.subtitle ? `副标题：${design.subtitle}` : ''}
-
-内容：
-${design.content.items.join('\n')}
-
-布局：${design.layout}
-${design.imageRequirement ? `配图要求：${design.imageRequirement.description}，位置：${design.imageRequirement.position}` : ''}
-
-${templateInfo ? `配色方案：${templateInfo.colors?.primary || '专业商务蓝'}` : '配色：专业商务风格'}
-
-设计要求：
-1. 专业、简洁、现代
-2. 视觉层次清晰
-3. 文字清晰可读（使用标准字体）
-4. 符合商务演示风格
-5. 16:9 横向布局
-
-请生成高质量的 PPT 页面效果图。
-`;
-
-    const result = await model.generateContent(prompt);
-    const response = result.response;
-
-    // Note: 图像生成功能的具体实现取决于 Gemini API 的版本和功能
-    // 这里假设返回 base64 编码的图像
-    // 实际实现可能需要根据 API 文档调整
-
-    // 临时返回占位符
-    // TODO: 实现真实的图像生成逻辑
-    return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  async generatePreviewImage(_design: any, _templateInfo?: any): Promise<string> {
+    throw new Error(
+      'generatePreviewImage 已弃用。请使用 lib/gemini/gemini-client.ts 中的 GeminiNativeClient 类。'
+    );
   }
 
   /**

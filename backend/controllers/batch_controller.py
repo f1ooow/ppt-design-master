@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 batch_bp = Blueprint('batch', __name__)
 
 # 允许的文件扩展名
-ALLOWED_EXTENSIONS = {'.xlsx', '.xls', '.txt', '.md', '.json'}
+ALLOWED_EXTENSIONS = {'.xlsx', '.xls', '.txt', '.md', '.json', '.docx'}
 
 
 def allowed_file(filename: str) -> bool:
@@ -50,11 +50,23 @@ def upload_script():
     try:
         # 保存文件
         filename = secure_filename(file.filename)
-        # 处理中文文件名
+        # 处理中文文件名：使用 UUID 生成安全的文件名，保留原扩展名
         if not filename or filename == '':
-            filename = file.filename
+            import uuid
+            ext = os.path.splitext(file.filename)[1].lower()
+            if ext not in ALLOWED_EXTENSIONS:
+                return error_response("不允许的文件扩展名", 400)
+            filename = f"{uuid.uuid4().hex}{ext}"
+
+        # 安全检查：确保文件名不包含路径分隔符
+        if os.path.sep in filename or '/' in filename or '\\' in filename:
+            return error_response("非法文件名", 400)
 
         upload_path = os.path.join(Config.UPLOAD_FOLDER, filename)
+        # 确保最终路径在上传目录内（防止路径穿越）
+        if not os.path.abspath(upload_path).startswith(os.path.abspath(Config.UPLOAD_FOLDER)):
+            return error_response("非法文件路径", 400)
+
         file.save(upload_path)
         logger.info(f"文件上传成功: {upload_path}")
 

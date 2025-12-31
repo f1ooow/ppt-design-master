@@ -17,17 +17,27 @@ class Config:
     # 服务端口
     PORT = int(os.getenv('PORT', 5000))
 
-    # CORS
-    CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*').split(',')
+    # CORS - 生产环境应通过环境变量配置具体域名
+    # 开发环境默认允许 localhost，生产环境必须显式配置
+    _cors_env = os.getenv('CORS_ORIGINS', '')
+    if _cors_env:
+        CORS_ORIGINS = _cors_env.split(',')
+    elif DEBUG:
+        # 开发环境允许本地访问
+        CORS_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000']
+    else:
+        # 生产环境如果未配置则禁止跨域
+        CORS_ORIGINS = []
 
-    # 文字处理 API (cottonapi)
-    TEXT_API_KEY = os.getenv('TEXT_API_KEY', 'sk-V5qeMJn0hTs1zr205WO6Zu0D29Y6VM1y4kGbZ9f31HFLj4i5')
-    TEXT_API_BASE = os.getenv('TEXT_API_BASE', 'https://cottonapi.cloud/v1')
-    TEXT_MODEL = os.getenv('TEXT_MODEL', 'gemini-2.0-flash-exp')
+    # 文字处理 API (Gemini 原生 API)
+    # 注意：必须通过环境变量配置，不要在代码中硬编码密钥
+    TEXT_API_KEY = os.getenv('TEXT_API_KEY', '')
+    TEXT_API_BASE = os.getenv('TEXT_API_BASE', '')
+    TEXT_MODEL = os.getenv('TEXT_MODEL', 'gemini-3-flash-preview')
 
     # 图片生成 API (Gemini 原生 API)
-    IMAGE_API_KEY = os.getenv('IMAGE_API_KEY', 'sk-JKhST3WoFHhwfSvDmfG75zFl9h56XZOFKW8Ir5IJk6DdvCbZ')
-    IMAGE_API_BASE = os.getenv('IMAGE_API_BASE', 'https://api.nkb.nkbpal.cn')
+    IMAGE_API_KEY = os.getenv('IMAGE_API_KEY', '')
+    IMAGE_API_BASE = os.getenv('IMAGE_API_BASE', '')
     IMAGE_MODEL = os.getenv('IMAGE_MODEL', 'gemini-3-pro-image-preview')
 
     # 并发配置

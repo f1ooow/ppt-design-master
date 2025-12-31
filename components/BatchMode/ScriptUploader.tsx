@@ -68,7 +68,7 @@ export default function ScriptUploader({ onUpload, isUploading }: ScriptUploader
             <label className="inline-block cursor-pointer">
               <input
                 type="file"
-                accept=".xlsx,.xls,.txt,.md,.json"
+                accept=".xlsx,.xls,.txt,.md,.json,.docx"
                 onChange={handleChange}
                 className="hidden"
               />
@@ -84,7 +84,7 @@ export default function ScriptUploader({ onUpload, isUploading }: ScriptUploader
         )}
       </div>
       <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-        支持 Excel、文本或 JSON 格式
+        支持 Excel、Word、文本或 JSON 格式
       </p>
     </div>
   );

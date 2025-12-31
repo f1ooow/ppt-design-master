@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createOpenAIClient } from '@/lib/gemini/openai-client';
+import { createGeminiClient } from '@/lib/gemini/gemini-client';
 import { validateImageApiConfig } from '@/config/gemini';
 import { ExtractImagesResponse, ApiConfig } from '@/types';
 
@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 创建客户端
-    const client = createOpenAIClient(apiConfig as ApiConfig);
+    const client = createGeminiClient(apiConfig as ApiConfig);
 
     // 提取单个插画
     const image = await client.extractSingleImage(croppedImageBase64);
